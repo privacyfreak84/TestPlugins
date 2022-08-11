@@ -1,0 +1,24 @@
+[
+    {
+        "iconUrl": "https://dorabash.in/wp-content/uploads/2025/11/20210525_121800-6.png",
+        "fileHash": "sha256-ba7c9ad2485a8ce285e95e33dde7bc4a862f057efc45a02145d092f468dabbdf",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/privacyfreak84/TestPlugins",
+        "fileSize": 41793,
+        "status": 1,
+        "language": "hi",
+        "authors": [
+            "Dorara"
+        ],
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "Cartoon"
+        ],
+        "version": 1,
+        "internalName": "DoraStream",
+        "description": "Doraemon movies, seasons, specials and short movies from Dora Bash",
+        "url": "https://raw.githubusercontent.com/privacyfreak84/TestPlugins/builds/DoraStream.cs3",
+        "name": "DoraStream"
+    }
+]
