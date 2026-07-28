@@ -1,0 +1,8 @@
+{
+  "name": "DoraStream Repo",
+  "description": "DoraStream - Doraemon anime provider for CloudStream",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/privacyfreak84/TestPlugins/builds/plugins.json"
+  ]
+}
