@@ -64,17 +64,30 @@ class DoraStream : MainAPI() {
         }
     }
 
-    // Site almost certainly lazy-loads images - "src" is a blank placeholder
-    // until JS swaps it in, with the real URL sitting in one of these
-    // data-* attributes instead. Try the common ones in order, fall back to
-    // src last in case a given page doesn't lazy-load.
+    // Same fallback order confirmed against the site's actual working
+    // provider: data-src, then data-lazy-src, then the first URL in
+    // srcset (it's a space-separated "url descriptor" pair, so take
+    // everything before the first space), then finally plain src as a
+    // last resort. This site does not use data-original - that was a
+    // guess on my part and never matched anything here, which is why
+    // images fell through to the blank placeholder in src.
     private fun Element.extractImageUrl(): String? {
-        val candidates = listOf("data-src", "data-lazy-src", "data-original", "src")
-        for (attrName in candidates) {
-            val value = this.attr(attrName)
-            if (value.isNotBlank() && !value.startsWith("data:")) return fixUrl(value)
-        }
-        return null
+        val dataSrc = this.attr("data-src")
+        if (dataSrc.isNotBlank()) return finishImageUrl(dataSrc)
+
+        val dataLazySrc = this.attr("data-lazy-src")
+        if (dataLazySrc.isNotBlank()) return finishImageUrl(dataLazySrc)
+
+        val srcsetFirst = this.attr("srcset").substringBefore(" ")
+        if (srcsetFirst.isNotBlank()) return finishImageUrl(srcsetFirst)
+
+        val src = this.attr("src")
+        return finishImageUrl(src)
+    }
+
+    private fun finishImageUrl(value: String): String? {
+        if (value.isBlank() || value.startsWith("data:image")) return null
+        return fixUrl(value)
     }
 
     // Standard WordPress search (confirmed via the site's own schema.org
