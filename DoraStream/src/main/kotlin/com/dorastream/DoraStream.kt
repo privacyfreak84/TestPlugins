@@ -3,6 +3,9 @@ package com.dorastream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 
 class DoraStream : MainAPI() {
@@ -40,7 +43,8 @@ class DoraStream : MainAPI() {
         }
 
         val document = getDocument(url)
-        val home = document.select("article.anime-card").mapNotNull { it.toSearchResult() }
+        val headers = cfHeaders(mainUrl)
+        val home = document.select("article.anime-card").mapNotNull { it.toSearchResult(headers) }
 
         return newHomePageResponse(
             HomePageList(request.name, home),
@@ -51,7 +55,7 @@ class DoraStream : MainAPI() {
     // Listing cards already carry everything needed - no extra request per
     // card required (the old fork fetched each card's page again just to
     // resolve a "series" URL; that page turned out to no longer be needed).
-    private fun Element.toSearchResult(): SearchResponse? {
+    private fun Element.toSearchResult(headers: Map<String, String>): SearchResponse? {
         val titleAnchor = this.selectFirst("h3 a") ?: return null
         val title = titleAnchor.attr("title").ifBlank { titleAnchor.text() }.trim()
         if (title.isBlank()) return null
@@ -61,7 +65,7 @@ class DoraStream : MainAPI() {
 
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
-            this.posterHeaders = cfHeaders(mainUrl)
+            this.posterHeaders = headers
         }
     }
 
@@ -97,7 +101,8 @@ class DoraStream : MainAPI() {
     // client-side via a REST call and can't be scraped as HTML.
     override suspend fun search(query: String): List<SearchResponse> {
         val document = getDocument("$mainUrl/?s=$query")
-        return document.select("article.anime-card").mapNotNull { it.toSearchResult() }
+        val headers = cfHeaders(mainUrl)
+        return document.select("article.anime-card").mapNotNull { it.toSearchResult(headers) }
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -118,13 +123,14 @@ class DoraStream : MainAPI() {
         // current layout, confirmed against a live page with 15 episodes
         // all present in one shot).
         val episodeElements = document.select(".episode-list-item")
+        val headers = cfHeaders(mainUrl)
 
         if (episodeElements.isEmpty()) {
             // No episode list => movie / special / short movie, the watch
             // page itself is the playable entry.
             return newMovieLoadResponse(title, url, TvType.AnimeMovie, url) {
                 posterUrl = poster
-                posterHeaders = cfHeaders(mainUrl)
+                posterHeaders = headers
                 plot = synopsis
                 this.tags = tags
                 rating?.toDoubleOrNull()?.let { score = Score.from10(it) }
@@ -147,7 +153,7 @@ class DoraStream : MainAPI() {
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             posterUrl = poster
-            posterHeaders = cfHeaders(mainUrl)
+            posterHeaders = headers
             plot = synopsis
             this.tags = tags
             rating?.toDoubleOrNull()?.let { score = Score.from10(it) }
@@ -162,50 +168,53 @@ class DoraStream : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = getDocument(data)
-        var foundAny = false
 
         // Every server (sub + each dub language) is exposed as
         // data-embed-id="base64(label):base64(full iframe url)" on a <span>.
         // The label text itself always ends in "sub" or "dub" - no need for
         // a wrapping container to tell them apart.
-        document.select("span[data-embed-id]").forEach { span ->
-            val raw = span.attr("data-embed-id")
-            val parts = raw.split(":")
-            if (parts.size != 2) return@forEach
-
-            // parts[0] is the visible label (e.g. "Japanese Sub", "Hindi Dub") -
-            // decode it so we can stamp it onto the link name below, otherwise
-            // every source shows up as an indistinguishable "Abyss [H264] 1080p".
+        val entries = document.select("span[data-embed-id]").mapNotNull { span ->
+            val parts = span.attr("data-embed-id").split(":")
+            if (parts.size != 2) return@mapNotNull null
             val label = runCatching { decodeBase64(parts[0]) }.getOrNull()?.trim()
             val embedUrl = runCatching { decodeBase64(parts[1]) }.getOrNull()
-            if (embedUrl.isNullOrBlank()) return@forEach
-
-            foundAny = true
-            // loadExtractor will silently do nothing for a host CloudStream
-            // has no matching extractor for - see the note below about
-            // AbyssPlayer/Hydrax specifically.
-            loadExtractor(embedUrl, data, subtitleCallback) { link ->
-                val renamed = if (label.isNullOrBlank()) {
-                    link
-                } else {
-                    @Suppress("DEPRECATION")
-                    ExtractorLink(
-                        source = link.source,
-                        name = "${link.name} - $label",
-                        url = link.url,
-                        referer = link.referer,
-                        quality = link.quality,
-                        headers = link.headers,
-                        extractorData = link.extractorData,
-                        type = link.type,
-                        audioTracks = link.audioTracks
-                    )
-                }
-                callback(renamed)
-            }
+            if (embedUrl.isNullOrBlank()) null else label to embedUrl
         }
 
-        return foundAny
+        if (entries.isEmpty()) return false
+
+        // Resolving each server used to happen one at a time - if a title
+        // has 5+ sub/dub servers, that's 5+ sequential embed-page fetches
+        // stacked up before playback could start. Resolving them all
+        // concurrently instead means total wait time is roughly the
+        // slowest single source, not the sum of all of them.
+        coroutineScope {
+            entries.map { (label, embedUrl) ->
+                async {
+                    loadExtractor(embedUrl, data, subtitleCallback) { link ->
+                        val renamed = if (label.isNullOrBlank()) {
+                            link
+                        } else {
+                            @Suppress("DEPRECATION")
+                            ExtractorLink(
+                                source = link.source,
+                                name = "${link.name} - $label",
+                                url = link.url,
+                                referer = link.referer,
+                                quality = link.quality,
+                                headers = link.headers,
+                                extractorData = link.extractorData,
+                                type = link.type,
+                                audioTracks = link.audioTracks
+                            )
+                        }
+                        callback(renamed)
+                    }
+                }
+            }.awaitAll()
+        }
+
+        return true
     }
 
     private fun decodeBase64(input: String): String {

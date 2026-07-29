@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class DoraStreamProvider : Plugin() {
     override fun load(context: Context) {
+        DoraStreamCfState.init(context)
         registerMainAPI(DoraStream())
     }
 }

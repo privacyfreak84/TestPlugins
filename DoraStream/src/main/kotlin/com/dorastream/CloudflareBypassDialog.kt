@@ -336,7 +336,46 @@ class CloudflareBypassDialog(
 
 /** Holds the most recently captured Cloudflare session for DoraStream. */
 object DoraStreamCfState {
+    private const val PREFS = "dorastream_cf"
+    private const val KEY_COOKIES = "cookies"
+    private const val KEY_HOST = "cookie_host"
+    private const val KEY_UA = "user_agent"
+
+    private var appContext: android.content.Context? = null
+    private var restored = false
+    private var restoring = false
+
     var cookies: String? = null
+        set(value) { field = value; persist() }
     var cookieHost: String? = null
+        set(value) { field = value; persist() }
     var userAgent: String? = null
+        set(value) { field = value; persist() }
+
+    fun init(context: android.content.Context) {
+        appContext = context.applicationContext
+        restore()
+    }
+
+    private fun restore() {
+        if (restored) return
+        restored = true
+        val ctx = appContext ?: return
+        restoring = true
+        val prefs = ctx.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+        cookies = prefs.getString(KEY_COOKIES, null)
+        cookieHost = prefs.getString(KEY_HOST, null)
+        userAgent = prefs.getString(KEY_UA, null)
+        restoring = false
+    }
+
+    private fun persist() {
+        if (restoring) return
+        val ctx = appContext ?: return
+        ctx.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).edit()
+            .putString(KEY_COOKIES, cookies)
+            .putString(KEY_HOST, cookieHost)
+            .putString(KEY_UA, userAgent)
+            .apply()
+    }
 }
