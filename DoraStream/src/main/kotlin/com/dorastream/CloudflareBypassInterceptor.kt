@@ -7,7 +7,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.Cookie
-import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.Response
 
@@ -66,13 +66,13 @@ fun isCloudflareBlocked(response: NiceResponse): Boolean {
 fun injectCookiesToApp(url: String) {
     val savedCookies = DoraStreamCfState.cookies ?: return
     runCatching {
-        val httpUrl = HttpUrl.parse(url) ?: return
+        val httpUrl = url.toHttpUrlOrNull() ?: return
         val cookies = savedCookies.split(";")
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .mapNotNull { Cookie.parse(httpUrl, it) }
         if (cookies.isNotEmpty()) {
-            app.baseClient.cookieJar().saveFromResponse(httpUrl, cookies)
+            app.baseClient.cookieJar.saveFromResponse(httpUrl, cookies)
         }
     }
 }
