@@ -9,8 +9,8 @@ class DoraStream : MainAPI() {
     override var mainUrl = "https://dorabash.in"
     override var name = "DoraStream"
     override val hasMainPage = true
-    override var lang = "en"
-    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
+    override var lang = "hi"
+    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.Cartoon)
 
     // All four sections, confirmed live. Pagination is the standard WP
     // pattern: page 1 has no suffix, page 2+ gets /page/N/.
