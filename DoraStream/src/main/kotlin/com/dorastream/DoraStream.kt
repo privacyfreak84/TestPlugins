@@ -61,6 +61,7 @@ class DoraStream : MainAPI() {
 
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
+            this.posterHeaders = cfHeaders(mainUrl)
         }
     }
 
@@ -123,6 +124,7 @@ class DoraStream : MainAPI() {
             // page itself is the playable entry.
             return newMovieLoadResponse(title, url, TvType.AnimeMovie, url) {
                 posterUrl = poster
+                posterHeaders = cfHeaders(mainUrl)
                 plot = synopsis
                 this.tags = tags
                 rating?.toDoubleOrNull()?.let { score = Score.from10(it) }
@@ -145,6 +147,7 @@ class DoraStream : MainAPI() {
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             posterUrl = poster
+            posterHeaders = cfHeaders(mainUrl)
             plot = synopsis
             this.tags = tags
             rating?.toDoubleOrNull()?.let { score = Score.from10(it) }

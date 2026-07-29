@@ -78,6 +78,39 @@ fun injectCookiesToApp(url: String) {
 }
 
 /**
+ * Headers for Cloudstream's own image loader to attach when fetching a
+ * poster/thumbnail URL - this is a SEPARATE pipeline from app.get() calls
+ * and does not automatically pick up cookies from app.baseClient's jar or
+ * anything CloudflareBypassInterceptor injects. Without this, HTML pages
+ * load fine (since those go through our explicit interceptor) while every
+ * poster image quietly 403s, because the image loader has no idea it needs
+ * a Cloudflare session at all. Set as `posterHeaders` on the SearchResponse
+ * / LoadResponse Cloudstream builds.
+ */
+fun cfHeaders(mainUrl: String): Map<String, String> {
+    val headers = mutableMapOf<String, String>()
+    headers["referer"] = "$mainUrl/"
+    DoraStreamCfState.userAgent?.let { headers["User-Agent"] = it }
+
+    var combinedCookies = DoraStreamCfState.cookies.orEmpty()
+    runCatching {
+        val httpUrl = mainUrl.toHttpUrlOrNull() ?: return@runCatching
+        val jarCookies = app.baseClient.cookieJar.loadForRequest(httpUrl)
+        if (jarCookies.isNotEmpty()) {
+            val jarCookieString = jarCookies.joinToString("; ") { "${it.name}=${it.value}" }
+            combinedCookies = if (combinedCookies.isNotBlank()) {
+                "$combinedCookies; $jarCookieString"
+            } else {
+                jarCookieString
+            }
+        }
+    }
+    if (combinedCookies.isNotBlank()) headers["Cookie"] = combinedCookies
+
+    return headers
+}
+
+/**
  * Shows the bypass dialog and waits for it, unconditionally (caller is
  * responsible for deciding whether a fresh solve is actually needed).
  */
