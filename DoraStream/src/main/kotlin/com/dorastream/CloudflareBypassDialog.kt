@@ -1,22 +1,29 @@
 package com.dorastream
 
 import android.annotation.SuppressLint
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import java.util.Locale
 import kotlin.coroutines.resume
+import kotlin.math.max
+import kotlin.math.min
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
@@ -42,6 +49,8 @@ class CloudflareBypassDialog(
     companion object {
         private const val POLL_INTERVAL_MS = 2000L
         private const val POLL_TIMEOUT_MS = 90_000L
+        private const val CURSOR_SIZE_PX = 24f
+        private const val CURSOR_STEP_PX = 50f
 
         private val CHALLENGE_TITLES = listOf(
             "just a moment",
@@ -114,6 +123,18 @@ class CloudflareBypassDialog(
         }
     }
 
+    private var pendingCursorView: android.view.View? = null
+
+    override fun onStart() {
+        super.onStart()
+        // BottomSheetDialogFragment's underlying Dialog isn't always fully
+        // ready when onCreateView runs - re-attach here too as a safety net
+        // so the D-pad listener reliably ends up registered either way.
+        pendingCursorView?.let { cv ->
+            dialog?.setOnKeyListener { _, keyCode, event -> handleTvRemoteKey(keyCode, event, cv) }
+        }
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -147,13 +168,101 @@ class CloudflareBypassDialog(
         }
         root.addView(progress)
 
+        // WebView sits inside a FrameLayout rather than being added to root
+        // directly, so the TV cursor dot below can be layered on top of it
+        // at an arbitrary (x, y) via translationX/Y.
+        val wvContainer = FrameLayout(requireContext())
         webView = buildWebView()
+        wvContainer.addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // Android TV has no touchscreen, so there's no way to tap a
+        // Turnstile checkbox directly. This adds a small on-screen dot that
+        // a D-pad remote can move around and "click" - dispatching a
+        // synthetic touch event into the WebView at the dot's position.
+        // Harmless no-op on touch devices; it only reacts to D-pad key
+        // events, which touchscreens don't send.
+        val cursorView = android.view.View(requireContext()).apply {
+            layoutParams = FrameLayout.LayoutParams(CURSOR_SIZE_PX.toInt(), CURSOR_SIZE_PX.toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(android.graphics.Color.RED)
+                setStroke(4, android.graphics.Color.WHITE)
+            }
+            elevation = 100f
+        }
+        wvContainer.addView(cursorView)
+        pendingCursorView = cursorView
+
+        wvContainer.post {
+            if (cursorX == 0f && cursorY == 0f && wvContainer.width > 0) {
+                cursorX = wvContainer.width / 2f
+                cursorY = wvContainer.height / 2f
+                cursorView.translationX = cursorX
+                cursorView.translationY = cursorY
+            }
+        }
+
+        // setOnKeyListener is only reachable once the underlying Dialog
+        // exists, which BottomSheetDialogFragment creates for us - safe to
+        // grab it here since onCreateView runs after that.
+        dialog?.setOnKeyListener { _, keyCode, event ->
+            handleTvRemoteKey(keyCode, event, cursorView)
+        }
+
         root.addView(
-            webView,
+            wvContainer,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, webViewHeight),
         )
 
         return root
+    }
+
+    private var cursorX = 0f
+    private var cursorY = 0f
+
+    private fun handleTvRemoteKey(keyCode: Int, event: KeyEvent, cursorView: android.view.View): Boolean {
+        val wv = webView ?: return false
+        if (event.action != KeyEvent.ACTION_DOWN) return false
+
+        val handled = when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                cursorY = max(cursorY - CURSOR_STEP_PX, 0f)
+                if (cursorY <= 10f) wv.scrollBy(0, -CURSOR_STEP_PX.toInt())
+                true
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                cursorY = min(cursorY + CURSOR_STEP_PX, wv.height - CURSOR_SIZE_PX.toFloat())
+                if (cursorY >= wv.height - CURSOR_SIZE_PX - 10f) wv.scrollBy(0, CURSOR_STEP_PX.toInt())
+                true
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                cursorX = max(cursorX - CURSOR_STEP_PX, 0f)
+                true
+            }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                cursorX = min(cursorX + CURSOR_STEP_PX, wv.width - CURSOR_SIZE_PX.toFloat())
+                true
+            }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                val time = SystemClock.uptimeMillis()
+                val cx = cursorX + CURSOR_SIZE_PX / 2f
+                val cy = cursorY + CURSOR_SIZE_PX / 2f
+                val down = MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, cx, cy, 0)
+                val up = MotionEvent.obtain(time, time + 100, MotionEvent.ACTION_UP, cx, cy, 0)
+                wv.dispatchTouchEvent(down)
+                wv.dispatchTouchEvent(up)
+                down.recycle()
+                up.recycle()
+                true
+            }
+            else -> false
+        }
+
+        if (handled) {
+            cursorView.translationX = cursorX
+            cursorView.translationY = cursorY
+        }
+        return handled
     }
 
     @SuppressLint("SetJavaScriptEnabled")
