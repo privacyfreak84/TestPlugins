@@ -3,7 +3,6 @@ package com.dorastream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import org.jsoup.nodes.Element
 
 class DoraStream : MainAPI() {
@@ -12,11 +11,6 @@ class DoraStream : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
-
-    // Shared Cloudflare-solving interceptor - dorabash.in sits behind
-    // Cloudflare, so every request needs to go through this or it'll
-    // silently receive a challenge page instead of real HTML.
-    private val cfInterceptor = CloudflareKiller()
 
     // All four sections, confirmed live. Pagination is the standard WP
     // pattern: page 1 has no suffix, page 2+ gets /page/N/.
@@ -27,6 +21,34 @@ class DoraStream : MainAPI() {
         "anime-type/short-movie/" to "Short Movies",
     )
 
+    // dorabash.in sits behind Cloudflare with an interactive challenge, so
+    // CloudflareKiller (headless WebView, can't click a checkbox) isn't
+    // enough. Instead: ensureCloudflareSession() shows a real, visible
+    // WebView the first time a session is needed, then every request goes
+    // through CloudflareBypassInterceptor, which just replays the captured
+    // cf_clearance cookie + UA. See CloudflareBypassDialog.kt for the solver
+    // and CloudflareBypassInterceptor.kt for the replay + retry helpers.
+    private suspend fun getDocument(url: String): org.jsoup.nodes.Document {
+        ensureCloudflareSession(mainUrl)
+
+        var response = app.get(url, interceptor = CloudflareBypassInterceptor)
+        var document = response.document
+
+        // Cached cookie can go stale (expiry, IP change, etc). If the page
+        // we got back still looks like a challenge, drop the cached session
+        // and force a fresh solve rather than returning an empty page.
+        if (looksLikeCfChallenge(document.title(), response.text)) {
+            DoraStreamCfState.cookies = null
+            val solved = ensureCloudflareSession(mainUrl)
+            if (solved) {
+                response = app.get(url, interceptor = CloudflareBypassInterceptor)
+                document = response.document
+            }
+        }
+
+        return document
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) {
             "$mainUrl/${request.data}"
@@ -34,7 +56,7 @@ class DoraStream : MainAPI() {
             "$mainUrl/${request.data}page/$page/"
         }
 
-        val document = app.get(url, interceptor = cfInterceptor).document
+        val document = getDocument(url)
         val home = document.select("article.anime-card").mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(
@@ -77,12 +99,12 @@ class DoraStream : MainAPI() {
     // "/search/?s_keyword=..." advanced search box is loaded entirely
     // client-side via a REST call and can't be scraped as HTML.
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/?s=$query", interceptor = cfInterceptor).document
+        val document = getDocument("$mainUrl/?s=$query")
         return document.select("article.anime-card").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, interceptor = cfInterceptor).document
+        val document = getDocument(url)
 
         val title = document.selectFirst(".anime-data h4 a")?.attr("title")
             ?: document.selectFirst("h1")?.text().orEmpty()
@@ -140,7 +162,7 @@ class DoraStream : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, interceptor = cfInterceptor).document
+        val document = getDocument(data)
         var foundAny = false
 
         // Every server (sub + each dub language) is exposed as
