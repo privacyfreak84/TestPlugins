@@ -23,30 +23,13 @@ class DoraStream : MainAPI() {
 
     // dorabash.in sits behind Cloudflare with an interactive challenge, so
     // CloudflareKiller (headless WebView, can't click a checkbox) isn't
-    // enough. Instead: ensureCloudflareSession() shows a real, visible
-    // WebView the first time a session is needed, then every request goes
-    // through CloudflareBypassInterceptor, which just replays the captured
-    // cf_clearance cookie + UA. See CloudflareBypassDialog.kt for the solver
-    // and CloudflareBypassInterceptor.kt for the replay + retry helpers.
+    // enough. cfSafeGet() (see CloudflareBypassInterceptor.kt) handles the
+    // full flow: fast-path if not blocked, mutex-guarded solve-and-retry if
+    // blocked - so concurrent calls (e.g. all 4 home page tabs loading at
+    // once) share one dialog instead of each popping their own.
     private suspend fun getDocument(url: String): org.jsoup.nodes.Document {
-        ensureCloudflareSession(mainUrl)
-
-        var response = app.get(url, interceptor = CloudflareBypassInterceptor)
-        var document = response.document
-
-        // Cached cookie can go stale (expiry, IP change, etc). If the page
-        // we got back still looks like a challenge, drop the cached session
-        // and force a fresh solve rather than returning an empty page.
-        if (looksLikeCfChallenge(document.title(), response.text)) {
-            DoraStreamCfState.cookies = null
-            val solved = ensureCloudflareSession(mainUrl)
-            if (solved) {
-                response = app.get(url, interceptor = CloudflareBypassInterceptor)
-                document = response.document
-            }
-        }
-
-        return document
+        val response = cfSafeGet(url) { u -> app.get(u, interceptor = CloudflareBypassInterceptor) }
+        return response.document
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
