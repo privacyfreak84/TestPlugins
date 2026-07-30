@@ -3,6 +3,8 @@ package com.dorastream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -95,14 +97,36 @@ class DoraStream : MainAPI() {
         return fixUrl(value)
     }
 
-    // Standard WordPress search (confirmed via the site's own schema.org
-    // SearchAction: "https://dorabash.in/?s={query}"). The site's own
-    // "/search/?s_keyword=..." advanced search box is loaded entirely
-    // client-side via a REST call and can't be scraped as HTML.
+    // Both /search/ and /?s= render zero results server-side - the actual
+    // results only ever get added by client-side JS calling this endpoint
+    // and injecting the returned HTML fragment into the page. Scraping the
+    // raw page HTML can never find them because they're never there; the
+    // theme's own performSearch() does the exact same POST this does.
+    data class AdvancedSearchAjaxResponse(
+        val success: Boolean? = null,
+        val data: String? = null,
+    )
+
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = getDocument("$mainUrl/?s=$query")
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+        val response = cfSafeGet(ajaxUrl) { u ->
+            app.post(
+                u,
+                data = mapOf("action" to "advanced_search", "s_keyword" to query),
+                interceptor = CloudflareBypassInterceptor,
+            )
+        }
+
+        val parsed = runCatching {
+            jacksonObjectMapper().readValue<AdvancedSearchAjaxResponse>(response.text)
+        }.getOrNull()
+
+        val fragmentHtml = parsed?.takeIf { it.success == true }?.data ?: return emptyList()
         val headers = cfHeaders(mainUrl)
-        return document.select("article.anime-card").mapNotNull { it.toSearchResult(headers) }
+
+        return org.jsoup.Jsoup.parse(fragmentHtml, mainUrl)
+            .select("article.anime-card")
+            .mapNotNull { it.toSearchResult(headers) }
     }
 
     override suspend fun load(url: String): LoadResponse {
