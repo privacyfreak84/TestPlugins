@@ -3,6 +3,7 @@ package com.dorastream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import kotlinx.coroutines.async
@@ -104,6 +105,7 @@ class DoraStream : MainAPI() {
     // theme's own performSearch() does the exact same POST this does.
     data class AdvancedSearchAjaxData(
         val html: String? = null,
+        @JsonProperty("max_pages") val maxPages: Int? = null,
     )
 
     data class AdvancedSearchAjaxResponse(
@@ -123,21 +125,14 @@ class DoraStream : MainAPI() {
 
         val parsed = runCatching {
             jacksonObjectMapper().readValue<AdvancedSearchAjaxResponse>(response.text)
-        }.onFailure {
-            android.util.Log.d("DoraStreamSearch", "parse EXCEPTION: ${it.javaClass.simpleName}: ${it.message}")
         }.getOrNull()
 
-        if (parsed == null) {
-            android.util.Log.d("DoraStreamSearch", "JSON parse returned null, raw=${response.code} ${response.text.take(500)}")
-        }
         val fragmentHtml = parsed?.takeIf { it.success == true }?.data?.html ?: return emptyList()
         val headers = cfHeaders(mainUrl)
 
-        val cards = org.jsoup.Jsoup.parse(fragmentHtml, mainUrl).select("article.anime-card")
-        // TEMPORARY - remove once search is confirmed working.
-        android.util.Log.d("DoraStreamSearch", "fragmentLen=${fragmentHtml.length} cardsFound=${cards.size} fragmentSample=${fragmentHtml.take(1500)}")
-
-        return cards.mapNotNull { it.toSearchResult(headers) }
+        return org.jsoup.Jsoup.parse(fragmentHtml, mainUrl)
+            .select("article.anime-card")
+            .mapNotNull { it.toSearchResult(headers) }
     }
 
     override suspend fun load(url: String): LoadResponse {
