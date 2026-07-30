@@ -2,6 +2,7 @@ package com.dorastream
 
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -40,9 +41,37 @@ object CloudflareBypassInterceptor : Interceptor {
     }
 }
 
-/** One mutex, shared across every request this provider makes. */
+/**
+ * Ensures at most one Cloudflare-solve attempt (and therefore at most one
+ * dialog) is ever active system-wide. Any caller that arrives while a solve
+ * is already in flight does NOT decide anything or recheck anything itself
+ * - it just awaits the one attempt already running and gets the same
+ * result everyone else gets. Once that attempt finishes (dialog closed,
+ * inFlight cleared), the next caller to hit a blocked response starts a
+ * fresh attempt from scratch. This is what actually prevents a second
+ * dialog from a caller's own recheck going badly, not just from two
+ * dialogs opening at the literal same instant.
+ */
 object DoraStreamCfBypass {
-    val mutex = Mutex()
+    private val mutex = Mutex()
+    private var inFlight: CompletableDeferred<Boolean>? = null
+
+    suspend fun solveOnce(targetUrl: String, solver: suspend (String) -> Boolean): Boolean {
+        val existing = mutex.withLock {
+            inFlight?.let { return@withLock it }
+            val deferred = CompletableDeferred<Boolean>()
+            inFlight = deferred
+            null
+        }
+        if (existing != null) return existing.await()
+
+        val result = runCatching { solver(targetUrl) }.getOrDefault(false)
+        mutex.withLock {
+            inFlight?.complete(result)
+            inFlight = null
+        }
+        return result
+    }
 }
 
 /**
@@ -125,12 +154,10 @@ private suspend fun showBypassDialog(targetUrl: String): Boolean {
 
 /**
  * The main entry point every request should go through instead of a bare
- * app.get(). Mirrors the double-checked-locking pattern used by the
- * confirmed-working DoraBash provider: check once outside the lock (fast
- * path, no contention on the common case), and if blocked, take the mutex,
- * check AGAIN inside it (in case a concurrent caller already solved it
- * while we were waiting), and only then show the dialog. This is what
- * prevents every concurrent request from popping its own dialog at once.
+ * app.get(). If blocked, defers entirely to DoraStreamCfBypass.solveOnce -
+ * this caller does not decide whether to show a dialog itself, it just
+ * asks for a solve and waits for whatever the single in-flight attempt
+ * (its own, or one already running for someone else) produces.
  */
 suspend fun cfSafeGet(
     url: String,
@@ -139,16 +166,12 @@ suspend fun cfSafeGet(
     val raw = getter(url)
     if (!isCloudflareBlocked(raw)) return raw
 
-    return DoraStreamCfBypass.mutex.withLock {
-        val recheck = getter(url)
-        if (!isCloudflareBlocked(recheck)) return@withLock recheck
-
-        // Still blocked even after acquiring the lock - the cached cookie
-        // (if any) isn't working, so drop it and force a fresh solve.
+    val solved = DoraStreamCfBypass.solveOnce(url) { targetUrl ->
         DoraStreamCfState.cookies = null
-        val solved = showBypassDialog(url)
-        if (solved) injectCookiesToApp(url)
-
-        if (solved) getter(url) else recheck
+        val ok = showBypassDialog(targetUrl)
+        if (ok) injectCookiesToApp(targetUrl)
+        ok
     }
+
+    return if (solved) getter(url) else raw
 }
