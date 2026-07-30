@@ -117,8 +117,13 @@ class DoraStream : MainAPI() {
             )
         }
 
+        // TEMPORARY - remove once search is confirmed working.
+        android.util.Log.d("DoraStreamSearch", "status=${response.code} body=${response.text.take(2000)}")
+
         val parsed = runCatching {
             jacksonObjectMapper().readValue<AdvancedSearchAjaxResponse>(response.text)
+        }.onFailure {
+            android.util.Log.d("DoraStreamSearch", "parse failed: ${it.message}")
         }.getOrNull()
 
         val fragmentHtml = parsed?.takeIf { it.success == true }?.data ?: return emptyList()
