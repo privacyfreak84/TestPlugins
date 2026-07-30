@@ -103,9 +103,15 @@ class DoraStream : MainAPI() {
     // and injecting the returned HTML fragment into the page. Scraping the
     // raw page HTML can never find them because they're never there; the
     // theme's own performSearch() does the exact same POST this does.
+    private val ajaxMapper by lazy {
+        jacksonObjectMapper().configure(
+            com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
+            false,
+        )
+    }
+
     data class AdvancedSearchAjaxData(
         val html: String? = null,
-        @JsonProperty("max_pages") val maxPages: Int? = null,
     )
 
     data class AdvancedSearchAjaxResponse(
@@ -124,15 +130,19 @@ class DoraStream : MainAPI() {
         }
 
         val parsed = runCatching {
-            jacksonObjectMapper().readValue<AdvancedSearchAjaxResponse>(response.text)
+            ajaxMapper.readValue<AdvancedSearchAjaxResponse>(response.text)
+        }.onFailure {
+            android.util.Log.d("DoraStreamSearch", "parse EXCEPTION: ${it.javaClass.simpleName}: ${it.message}")
         }.getOrNull()
 
         val fragmentHtml = parsed?.takeIf { it.success == true }?.data?.html ?: return emptyList()
         val headers = cfHeaders(mainUrl)
 
-        return org.jsoup.Jsoup.parse(fragmentHtml, mainUrl)
-            .select("article.anime-card")
-            .mapNotNull { it.toSearchResult(headers) }
+        val cards = org.jsoup.Jsoup.parse(fragmentHtml, mainUrl).select("article.anime-card")
+        // TEMPORARY - remove once search is confirmed working.
+        android.util.Log.d("DoraStreamSearch", "cardsFound=${cards.size} fragmentSample=${fragmentHtml.take(800)}")
+
+        return cards.mapNotNull { it.toSearchResult(headers) }
     }
 
     override suspend fun load(url: String): LoadResponse {
