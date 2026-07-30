@@ -125,12 +125,17 @@ class DoraStream : MainAPI() {
             jacksonObjectMapper().readValue<AdvancedSearchAjaxResponse>(response.text)
         }.getOrNull()
 
+        if (parsed == null) {
+            android.util.Log.d("DoraStreamSearch", "JSON parse returned null, raw=${response.code} ${response.text.take(500)}")
+        }
         val fragmentHtml = parsed?.takeIf { it.success == true }?.data?.html ?: return emptyList()
         val headers = cfHeaders(mainUrl)
 
-        return org.jsoup.Jsoup.parse(fragmentHtml, mainUrl)
-            .select("article.anime-card")
-            .mapNotNull { it.toSearchResult(headers) }
+        val cards = org.jsoup.Jsoup.parse(fragmentHtml, mainUrl).select("article.anime-card")
+        // TEMPORARY - remove once search is confirmed working.
+        android.util.Log.d("DoraStreamSearch", "fragmentLen=${fragmentHtml.length} cardsFound=${cards.size} fragmentSample=${fragmentHtml.take(1500)}")
+
+        return cards.mapNotNull { it.toSearchResult(headers) }
     }
 
     override suspend fun load(url: String): LoadResponse {
