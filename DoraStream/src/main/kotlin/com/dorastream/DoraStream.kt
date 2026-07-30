@@ -102,9 +102,13 @@ class DoraStream : MainAPI() {
     // and injecting the returned HTML fragment into the page. Scraping the
     // raw page HTML can never find them because they're never there; the
     // theme's own performSearch() does the exact same POST this does.
+    data class AdvancedSearchAjaxData(
+        val html: String? = null,
+    )
+
     data class AdvancedSearchAjaxResponse(
         val success: Boolean? = null,
-        val data: String? = null,
+        val data: AdvancedSearchAjaxData? = null,
     )
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -117,16 +121,11 @@ class DoraStream : MainAPI() {
             )
         }
 
-        // TEMPORARY - remove once search is confirmed working.
-        android.util.Log.d("DoraStreamSearch", "status=${response.code} body=${response.text.take(2000)}")
-
         val parsed = runCatching {
             jacksonObjectMapper().readValue<AdvancedSearchAjaxResponse>(response.text)
-        }.onFailure {
-            android.util.Log.d("DoraStreamSearch", "parse failed: ${it.message}")
         }.getOrNull()
 
-        val fragmentHtml = parsed?.takeIf { it.success == true }?.data ?: return emptyList()
+        val fragmentHtml = parsed?.takeIf { it.success == true }?.data?.html ?: return emptyList()
         val headers = cfHeaders(mainUrl)
 
         return org.jsoup.Jsoup.parse(fragmentHtml, mainUrl)
