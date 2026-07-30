@@ -123,6 +123,8 @@ class DoraStream : MainAPI() {
 
         val parsed = runCatching {
             jacksonObjectMapper().readValue<AdvancedSearchAjaxResponse>(response.text)
+        }.onFailure {
+            android.util.Log.d("DoraStreamSearch", "parse EXCEPTION: ${it.javaClass.simpleName}: ${it.message}")
         }.getOrNull()
 
         if (parsed == null) {
