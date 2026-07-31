@@ -3,7 +3,6 @@ package com.dorastream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import kotlinx.coroutines.async
@@ -139,8 +138,6 @@ class DoraStream : MainAPI() {
         val headers = cfHeaders(mainUrl)
 
         val cards = org.jsoup.Jsoup.parse(fragmentHtml, mainUrl).select("article.anime-card")
-        // TEMPORARY - remove once search is confirmed working.
-        android.util.Log.d("DoraStreamSearch", "cardsFound=${cards.size} fragmentSample=${fragmentHtml.take(800)}")
 
         return cards.mapNotNull { it.toSearchResult(headers) }
     }
@@ -232,13 +229,18 @@ class DoraStream : MainAPI() {
             entries.map { (label, embedUrl) ->
                 async {
                     loadExtractor(embedUrl, data, subtitleCallback) { link ->
-                        val renamed = if (label.isNullOrBlank()) {
+                        val warning = codecWarningSuffix(link.url)
+                        val suffix = buildString {
+                            if (!label.isNullOrBlank()) append(" - $label")
+                            append(warning)
+                        }
+                        val renamed = if (suffix.isEmpty()) {
                             link
                         } else {
                             @Suppress("DEPRECATION")
                             ExtractorLink(
                                 source = link.source,
-                                name = "${link.name} - $label",
+                                name = "${link.name}$suffix",
                                 url = link.url,
                                 referer = link.referer,
                                 quality = link.quality,
@@ -255,6 +257,28 @@ class DoraStream : MainAPI() {
         }
 
         return true
+    }
+
+    /**
+     * Abyss occasionally serves a track in AV1 with no H264 alternative
+     * within the same manifest - fine on most phones, but a silent
+     * black-screen (audio-only) failure on TV boxes lacking AV1 hardware
+     * decode. Rather than guess, check the actual manifest: HLS variant
+     * playlists declare their codec in the CODECS attribute
+     * (av01... vs avc1...). If every variant is AV1 and none is H264,
+     * flag it in the name so the user can pick a different track
+     * up front instead of hitting a stuck black screen after pressing
+     * play. Only applies to HLS (.m3u8); direct mp4 links aren't
+     * inspected here since that would need parsing the file's binary
+     * headers rather than reading a text manifest.
+     */
+    private suspend fun codecWarningSuffix(url: String): String {
+        if (!url.contains(".m3u8", ignoreCase = true)) return ""
+        val manifest = runCatching { app.get(url).text }.getOrNull() ?: return ""
+        val hasAv1 = manifest.contains("av01", ignoreCase = true)
+        val hasH264 = manifest.contains("avc1", ignoreCase = true) ||
+                manifest.contains("h264", ignoreCase = true)
+        return if (hasAv1 && !hasH264) " [AV1 - may not play on some TVs]" else ""
     }
 
     private fun decodeBase64(input: String): String {
