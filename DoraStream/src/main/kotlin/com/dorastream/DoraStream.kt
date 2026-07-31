@@ -229,7 +229,7 @@ class DoraStream : MainAPI() {
             entries.map { (label, embedUrl) ->
                 async {
                     loadExtractor(embedUrl, data, subtitleCallback) { link ->
-                        val warning = codecWarningSuffix(link.url)
+                        val warning = kotlinx.coroutines.runBlocking { codecWarningSuffix(link.url) }
                         val suffix = buildString {
                             if (!label.isNullOrBlank()) append(" - $label")
                             append(warning)
