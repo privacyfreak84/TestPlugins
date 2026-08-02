@@ -306,19 +306,33 @@ class DoraStream : MainAPI() {
     private suspend fun preferredAudioUrl(link: ExtractorLink): String? {
         val langCode = DoraStreamBysePref.getPreferredLang()
         if (langCode.isBlank()) return null
-        if (!link.source.equals("Byse", ignoreCase = true)) return null
-        if (!link.url.contains(".m3u8", ignoreCase = true)) return null
+        if (!link.source.equals("Byse", ignoreCase = true)) {
+            android.util.Log.d("DoraStreamByse", "source mismatch: '${link.source}' != Byse")
+            return null
+        }
+        if (!link.url.contains(".m3u8", ignoreCase = true)) {
+            android.util.Log.d("DoraStreamByse", "not m3u8: ${link.url}")
+            return null
+        }
 
         val manifest = runCatching { app.get(link.url).text }.getOrNull() ?: return null
-        if (!manifest.contains("TYPE=AUDIO")) return null
+        val audioLines = manifest.lines().filter { it.startsWith("#EXT-X-MEDIA:") && it.contains("TYPE=AUDIO") }
+        // TEMPORARY - remove once default-track selection is confirmed working.
+        android.util.Log.d("DoraStreamByse", "langCode=$langCode audioLines=$audioLines")
+        if (audioLines.isEmpty()) return null
 
         val langLabel = languageLabels[langCode].orEmpty()
         val rewritten = manifest.lines().joinToString("\n") { line ->
             if (!line.startsWith("#EXT-X-MEDIA:") || !line.contains("TYPE=AUDIO")) {
                 return@joinToString line
             }
-            val isPreferred = line.contains("LANGUAGE=\"$langCode\"", ignoreCase = true) ||
-                    (langLabel.isNotEmpty() && line.contains("NAME=\"$langLabel\"", ignoreCase = true))
+            // LANGUAGE match is prefix-based (LANGUAGE="hi-IN" should still
+            // match "hi"), NAME match is substring-based (NAME="Hindi
+            // (Dub)" should still match "Hindi") rather than requiring an
+            // exact quoted value - the first attempt required an exact
+            // match on both and that's the likely reason nothing matched.
+            val isPreferred = Regex("LANGUAGE=\"$langCode").containsMatchIn(line) ||
+                    (langLabel.isNotEmpty() && line.contains(langLabel, ignoreCase = true))
             val flag = if (isPreferred) "DEFAULT=YES" else "DEFAULT=NO"
             if (line.contains("DEFAULT=")) {
                 line.replace(Regex("DEFAULT=(YES|NO)"), flag)
@@ -326,6 +340,9 @@ class DoraStream : MainAPI() {
                 "$line,$flag"
             }
         }
+        // TEMPORARY - remove once default-track selection is confirmed working.
+        android.util.Log.d("DoraStreamByse", "changed=${rewritten != manifest} rewrittenAudioLines=" +
+                rewritten.lines().filter { it.startsWith("#EXT-X-MEDIA:") && it.contains("TYPE=AUDIO") })
 
         // No matching language found in this manifest - nothing to
         // change, don't bother constructing a data URI for an identical
