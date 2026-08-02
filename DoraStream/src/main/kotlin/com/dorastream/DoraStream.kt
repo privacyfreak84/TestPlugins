@@ -230,18 +230,21 @@ class DoraStream : MainAPI() {
                 async {
                     loadExtractor(embedUrl, data, subtitleCallback) { link ->
                         val warning = kotlinx.coroutines.runBlocking { codecWarningSuffix(link.url) }
+                        val effectiveUrl = kotlinx.coroutines.runBlocking {
+                            preferredAudioUrl(link) ?: link.url
+                        }
                         val suffix = buildString {
                             if (!label.isNullOrBlank()) append(" - $label")
                             append(warning)
                         }
-                        val renamed = if (suffix.isEmpty()) {
+                        val renamed = if (suffix.isEmpty() && effectiveUrl == link.url) {
                             link
                         } else {
                             @Suppress("DEPRECATION")
                             ExtractorLink(
                                 source = link.source,
                                 name = "${link.name}$suffix",
-                                url = link.url,
+                                url = effectiveUrl,
                                 referer = link.referer,
                                 quality = link.quality,
                                 headers = link.headers,
@@ -279,6 +282,61 @@ class DoraStream : MainAPI() {
         val hasH264 = manifest.contains("avc1", ignoreCase = true) ||
                 manifest.contains("h264", ignoreCase = true)
         return if (hasAv1 && !hasH264) " [AV1 - may not play on some TVs]" else ""
+    }
+
+    private val languageLabels = mapOf("hi" to "Hindi", "ta" to "Tamil", "te" to "Telugu")
+
+    /**
+     * Byse bundles every dub into one HLS manifest as separate
+     * EXT-X-MEDIA audio renditions, rather than exposing one URL per
+     * language like every other server here. Standard HLS behavior
+     * (ExoPlayer included) is to auto-select whichever rendition has
+     * DEFAULT=YES on first playback - so if we fetch the manifest, move
+     * that flag to match the user's saved preference, and hand the
+     * player our rewritten copy instead of the original, the right
+     * language plays without the track switcher ever needing to open.
+     *
+     * NEEDS LIVE-DEVICE CONFIRMATION: this depends on Cloudstream's
+     * player accepting a data: URI as an ExtractorLink url. If it
+     * rejects it (falls back to nothing playing), the fallback is
+     * serving the rewritten manifest from a tiny local server instead -
+     * a bigger change, only worth building if this cheaper approach
+     * actually fails.
+     */
+    private suspend fun preferredAudioUrl(link: ExtractorLink): String? {
+        val langCode = DoraStreamBysePref.getPreferredLang()
+        if (langCode.isBlank()) return null
+        if (!link.source.equals("Byse", ignoreCase = true)) return null
+        if (!link.url.contains(".m3u8", ignoreCase = true)) return null
+
+        val manifest = runCatching { app.get(link.url).text }.getOrNull() ?: return null
+        if (!manifest.contains("TYPE=AUDIO")) return null
+
+        val langLabel = languageLabels[langCode].orEmpty()
+        val rewritten = manifest.lines().joinToString("\n") { line ->
+            if (!line.startsWith("#EXT-X-MEDIA:") || !line.contains("TYPE=AUDIO")) {
+                return@joinToString line
+            }
+            val isPreferred = line.contains("LANGUAGE=\"$langCode\"", ignoreCase = true) ||
+                    (langLabel.isNotEmpty() && line.contains("NAME=\"$langLabel\"", ignoreCase = true))
+            val flag = if (isPreferred) "DEFAULT=YES" else "DEFAULT=NO"
+            if (line.contains("DEFAULT=")) {
+                line.replace(Regex("DEFAULT=(YES|NO)"), flag)
+            } else {
+                "$line,$flag"
+            }
+        }
+
+        // No matching language found in this manifest - nothing to
+        // change, don't bother constructing a data URI for an identical
+        // rewrite.
+        if (rewritten == manifest) return null
+
+        val encoded = android.util.Base64.encodeToString(
+            rewritten.toByteArray(Charsets.UTF_8),
+            android.util.Base64.NO_WRAP,
+        )
+        return "data:application/vnd.apple.mpegurl;base64,$encoded"
     }
 
     private fun decodeBase64(input: String): String {
